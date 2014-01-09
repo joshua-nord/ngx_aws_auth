@@ -11,6 +11,7 @@ static const EVP_MD* evp_md = NULL;
 
 #define AWS_S3_VARIABLE "s3_auth_token"
 #define AWS_DATE_VARIABLE "aws_date"
+#define AWS_TOKEN_VARIABLE "aws_security_token"
 
 static void* ngx_http_aws_auth_create_loc_conf(ngx_conf_t *cf);
 static char* ngx_http_aws_auth_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
@@ -19,6 +20,7 @@ static ngx_int_t register_variable(ngx_conf_t *cf);
 typedef struct {
     ngx_str_t access_key;
     ngx_str_t secret;
+    ngx_str_t token;
     ngx_str_t s3_bucket;
     ngx_str_t chop_prefix;
 } ngx_http_aws_auth_conf_t;
@@ -39,7 +41,14 @@ static ngx_command_t  ngx_http_aws_auth_commands[] = {
       offsetof(ngx_http_aws_auth_conf_t, secret),
       NULL },
 
-    { ngx_string("s3_bucket"),
+    { ngx_string("aws_security_token"),
+      NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_aws_auth_conf_t, token),
+      NULL },
+    
+   { ngx_string("s3_bucket"),
       NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_str_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
@@ -109,8 +118,8 @@ ngx_http_aws_auth_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_str_value(conf->access_key, prev->access_key, "");
     ngx_conf_merge_str_value(conf->secret, prev->secret, "");
+    ngx_conf_merge_str_value(conf->token, prev->token, "");
     ngx_conf_merge_str_value(conf->chop_prefix, prev->chop_prefix, "");
-
     return NGX_CONF_OK;
 }
 
@@ -146,8 +155,8 @@ ngx_http_aws_auth_variable_s3(ngx_http_request_t *r, ngx_http_variable_value_t *
     }
 
     u_char *str_to_sign = ngx_palloc(r->pool,r->uri.len + aws_conf->s3_bucket.len + 200);
-    ngx_sprintf(str_to_sign, "GET\n\n\n\nx-amz-date:%V\n/%V%s%Z",
-        &ngx_cached_http_time, &aws_conf->s3_bucket,uri);
+    ngx_sprintf(str_to_sign, "GET\n\n\n\nx-amz-date:%V\nx-amz-security-token:%V\n/%V%s%Z",
+        &ngx_cached_http_time, &aws_conf->token, &aws_conf->s3_bucket,uri);
     ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,"String to sign:%s",str_to_sign);
 
 
@@ -199,12 +208,33 @@ ngx_http_aws_auth_variable_date(ngx_http_request_t *r, ngx_http_variable_value_t
     return NGX_OK;
 }
 
+static ngx_int_t
+ngx_http_aws_auth_variable_token(ngx_http_request_t *r, ngx_http_variable_value_t *v,
+    uintptr_t data)
+{
+    ngx_http_aws_auth_conf_t *aws_conf;
+    aws_conf = ngx_http_get_module_loc_conf(r, ngx_http_aws_auth_module);
+   
+    u_char *token = ngx_palloc(r->pool,1+aws_conf->token.len);
+    ngx_sprintf(token, "%V%Z", &aws_conf->token);
+ 
+    v->len = ngx_strlen(token);
+    v->data = token;
+    v->valid = 1;
+    v->no_cacheable = 0;
+    v->not_found = 0;
+    return NGX_OK;
+}
+
 static ngx_http_variable_t  ngx_http_aws_auth_vars[] = {
     { ngx_string(AWS_S3_VARIABLE), NULL,
       ngx_http_aws_auth_variable_s3, 0, NGX_HTTP_VAR_CHANGEABLE, 0 },
 
     { ngx_string(AWS_DATE_VARIABLE), NULL,
       ngx_http_aws_auth_variable_date, 0, NGX_HTTP_VAR_CHANGEABLE, 0 },
+
+    { ngx_string(AWS_TOKEN_VARIABLE), NULL,
+      ngx_http_aws_auth_variable_token, 0, NGX_HTTP_VAR_CHANGEABLE, 0 },
 
     { ngx_null_string, NULL, NULL, 0, 0, 0 }
 };
